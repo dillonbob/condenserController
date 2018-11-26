@@ -1,5 +1,6 @@
 
 
+
 var sensorController = (function () {
   var W1Temp = require('w1temp');
   var mqtt = require('mqtt');
@@ -15,7 +16,7 @@ var sensorController = (function () {
   var sensorHandler = function (temperature) {
     var num = this.file.split('/').length - 2;
     console.log('Sensor UID:', this.file.split('/')[num], 'Temperature: ', temperature.toFixed(3), '°C   ');
-    mqttClient.publish('stillpi/sensors/report', JSON.stringify({ 'sensorid': this.file.split('/')[num], 'value': temperature.toFixed(3), units: 'C'}));
+    mqttClient.publish('stillpi/sensors/report', JSON.stringify({ 'sensorid': this.file.split('/')[num], 'value': temperature.toFixed(3), units: 'C'}), (err, granted) => {console.log("err: ", err, ",   granted: ", granted)});
   };
 
 
@@ -35,13 +36,14 @@ var sensorController = (function () {
         break;
 
       case 'stillpi/sensors/ping':
-        var pingSensorID = JSON.parse(message.toString('utf8')).sensorid;
-        console.log('Ping for sensor: ', pingSensorID);
-        if (sensorIDs.includes(pingSensorID)) {
-          console.log('Responding to ping on sensor: ', pingSensorID);
-          mqttClient.publish('stillpi/sensors/ping/'+pingSensorID, JSON.stringify({'type': 'response', 'sensorid': pingSensorID}));
-        }
-        break;
+      var pingSensorID = JSON.parse(message.toString('utf8')).sensorid;
+      // var pingSensorID = message.sensorid;
+      console.log('Ping for sensor: ', pingSensorID);
+      if (sensorIDs.includes(pingSensorID)) {
+        console.log('Responding to ping on sensor: ', pingSensorID);
+        mqttClient.publish('stillpi/sensors/ping/'+pingSensorID, JSON.stringify({'type': 'response', 'sensorid': pingSensorID}), (err, granted) => {console.log("err: ", err, ",   granted: ", granted)});
+      }
+      break;
     }
   };
 
@@ -50,7 +52,7 @@ var sensorController = (function () {
     sensorIDs.forEach(sensor => {
       W1Temp.getSensor(sensor).then(function(sensorInstance) {
         console.log('Announcing: ', sensor);
-        mqttClient.publish('stillpi/sensors/identify/announce', JSON.stringify({ 'sensorid': sensor, 'class' : 'temperature', value: sensorInstance.getTemperature(), units: 'C'}));
+        mqttClient.publish('stillpi/sensors/identify/announce', JSON.stringify({ 'sensorid': sensor, 'class' : 'temperature', value: sensorInstance.getTemperature(), units: 'C'}), (err, granted) => {console.log("err: ", err, ",   granted: ", granted)});
       });
     });
   };
@@ -65,7 +67,7 @@ var sensorController = (function () {
       sensors.forEach( sensor => {
         if (!sensorIDs.includes(sensor)) {
           // Anounce the new sensor.  
-          mqttClient.publish('stillpi/sensors/identify/announce', JSON.stringify({ 'sensorid': sensor, 'class' : 'temperature'}));
+          mqttClient.publish('stillpi/sensors/identify/announce', JSON.stringify({ 'sensorid': sensor, 'class' : 'temperature'}), (err, granted) => {console.log("err: ", err, ",   granted: ", granted)});
         }
       });
       
@@ -73,7 +75,7 @@ var sensorController = (function () {
       sensorIDs.forEach( sensor => {
         if (!sensors.includes(sensor)) {
           // Anounce the new sensor.  
-          mqttClient.publish('stillpi/sensors/identify/delete', JSON.stringify({ 'sensorid': sensor, 'class' : 'temperature'}));
+          mqttClient.publish('stillpi/sensors/identify/delete', JSON.stringify({ 'sensorid': sensor, 'class' : 'temperature'}), (err, granted) => {console.log("err: ", err, ",   granted: ", granted)});
         }
       });
 
@@ -191,4 +193,4 @@ var controller = (function (sensorCtrl, mqttCtrl) {
 })(sensorController, mqttController);
 
 
-controller.init();
+controller.init()
