@@ -1,6 +1,7 @@
 
 
 
+
 var sensorController = (function () {
   var W1Temp = require('w1temp');
   var mqtt = require('mqtt');
@@ -41,7 +42,7 @@ var sensorController = (function () {
       console.log('Ping for sensor: ', pingSensorID);
       if (sensorIDs.includes(pingSensorID)) {
         console.log('Responding to ping on sensor: ', pingSensorID);
-        mqttClient.publish('stillpi/sensors/ping/'+pingSensorID, JSON.stringify({'type': 'response', 'sensorid': pingSensorID}), (err, granted) => {console.log("err: ", err, ",   granted: ", granted)});
+        mqttClient.publish('stillpi/sensors/ping/', JSON.stringify({'type': 'response', 'sensorid': pingSensorID}), (err, granted) => {console.log("MQTT message sent.  err: ", err, ",   granted: ", granted)});
       }
       break;
     }
@@ -193,4 +194,4 @@ var controller = (function (sensorCtrl, mqttCtrl) {
 })(sensorController, mqttController);
 
 
-controller.init()
+controller.init(
