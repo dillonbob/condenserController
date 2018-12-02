@@ -1,9 +1,3 @@
-
-
-
-
-
-
 var sensorController = (function () {
   var W1Temp = require('w1temp');
   var mqtt = require('mqtt');
@@ -47,21 +41,29 @@ var sensorController = (function () {
         break;
 
       case 'stillpi/sensors/ping':
-        var pingSensorID = JSON.parse(message.toString('utf8')).sensorid;
-        // var pingSensorID = message.sensorid;
-        console.log('Ping for sensor: ', pingSensorID);
-        if (sensorIDs.includes(pingSensorID)) {
-          console.log('Responding to ping on sensor: ', pingSensorID);
-          mqttClient.publish('stillpi/sensors/ping', JSON.stringify({'type': 'response', 'sensorid': pingSensorID}), 
-            (err, granted) => {
-              if (typeof err !== "undefined") {
-                console.log("err: ", err);
-              };
-              if (typeof granted !== "undefined") {
-                console.log("granted: ", granted);
-              }
-            });
-        }
+        var pingMessageType = JSON.parse(message.toString('utf8')).type;
+        // console.log("Ping message type: ", pingMessageType);
+
+        if (pingMessageType === 'call') {
+          var pingSensorID = JSON.parse(message.toString('utf8')).sensorid;
+          // var pingSensorID = message.sensorid;
+          // console.log('Ping for sensor: ', pingSensorID);
+          if (sensorIDs.includes(pingSensorID)) {
+            console.log('Responding to ping on sensor: ', pingSensorID);
+            mqttClient.publish('stillpi/sensors/ping', JSON.stringify({'type': 'response', 'sensorid': pingSensorID}), 
+              (err, granted) => {
+                if (typeof err !== "undefined") {
+                  console.log("err: ", err);
+                };
+                if (typeof granted !== "undefined") {
+                  console.log("granted: ", granted);
+                }
+              });
+          }
+        } 
+        // else {
+        //   console.log("Skipping ping response message.", JSON.parse(message.toString('utf8')), (pingMessageType === 'call'));
+        // }
       break;
     }
   };
