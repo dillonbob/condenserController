@@ -104,6 +104,7 @@ var sensorController = (function () {
           console.log('Connecting to MQTT broker.')
           //Setup the MQTT client that this sensor controller uses to receive sensor data from the master.  
           var options = {
+            keepalive: 1,
             username: brokerUsername,
             password: Buffer.alloc(brokerPassword.length, brokerPassword) // Passwords are buffers
           } 
