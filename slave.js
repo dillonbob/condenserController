@@ -2,14 +2,19 @@ var sensorController = (function () {
   var W1Temp = require('w1temp');
   var mqtt = require('mqtt');
   var mqttClient;
+  var mdns = require('mdns');
   var brokerAddress;
   // THE FOLLOWING ARE THE AUTHENTICATION CREDENTIALS FOR THE MQTT BROKER
   // CHANGE THESE IF DIFFERENT CREDENTIALS ARE DESIRED.  REMEMBER TO ALSO CHANGE THESE IN THE MASTER. 
   var brokerUsername = 'still';
   var brokerPassword = 'pi';
   var connectToBroker = true;
-  var sensorIDs;
+  var sensorIDs = [];
+  var sensorControllers = [];
+ 
   
+
+
   var sensorHandler = function (temperature) {
     var num = this.file.split('/').length - 2;
     console.log('Sensor UID:', this.file.split('/')[num], 'Temperature: ', temperature.toFixed(3), '°C   ');
@@ -32,7 +37,6 @@ var sensorController = (function () {
     switch (topic) {
       case 'stillpi/sensors/identify/invoke':
         console.log('Announce message recieved.');
-        // announceSensors();
 	      var sensorClass = JSON.parse(message.toString('utf8')).class;
         if (sensorClass === 'all' || sensorClass === 'temperature') {
             console.log('Announcing sensors.');
@@ -70,71 +74,37 @@ var sensorController = (function () {
 
 
   var announceSensors = function () {
-    sensorIDs.forEach(sensor => {
-      W1Temp.getSensor(sensor).then(function(sensorInstance) {
-        console.log('Announcing: ', sensor);
-        mqttClient.publish('stillpi/sensors/identify/announce', JSON.stringify({ 'sensorid': sensor, 'class' : 'temperature', value: sensorInstance.getTemperature(), units: 'C'}), 
-          (err, granted) => {
-            if (typeof err !== "undefined") {
-              console.log("err: ", err);
-            };
-            if (typeof granted !== "undefined") {
-              console.log("granted: ", granted);
-            }
-          });
-      });
-    });
-  };
 
-  // Scan for all connected sensors and add/delete sensors that are new/gone with master node.  
-  var updateSensors = function () {
-    console.log('Updating sensor list.');
-    // Get the list of currently connected sensors.  
-    W1Temp.getSensorsUids()
-    .then( function( sensors ) {
-      // Look for new sensors and anounce them when found.
-      sensors.forEach( sensor => {
-        if (!sensorIDs.includes(sensor)) {
-          // Anounce the new sensor.  
-          mqttClient.publish('stillpi/sensors/identify/announce', JSON.stringify({ 'sensorid': sensor, 'class' : 'temperature'}), 
-              (err, granted) => {
-                  if (typeof err !== "undefined") {
-                    console.log("err: ", err);
-                  };
-                  if (typeof granted !== "undefined") {
-                    console.log("granted: ", granted);
-                  }
-              });
-        }
-      });
-      
-      // Look for sensors that went away since last sweep and let master node know if any found.  
-      sensorIDs.forEach( sensor => {
-        if (!sensors.includes(sensor)) {
-          // Anounce the new sensor.  
-          mqttClient.publish('stillpi/sensors/identify/delete', JSON.stringify({ 'sensorid': sensor, 'class' : 'temperature'}), 
-            (err, granted) => {
-              if (typeof err !== "undefined") {
-                console.log("err: ", err);
-              };
-              if (typeof granted !== "undefined") {
-                console.log("granted: ", granted);
-              }
-            });
-        }
+    if (typeof sensorIDs !== "undefined") {
+      console.log("ANNOUNCE SENSORS");
+    }
+
+    sensorIDs.forEach( (sensor, index) => {
+
+      console.log('Announcing: ', sensor, "MQTT broker connected: ", mqttClient.connected);
+      var temp = sensorControllers[index].getTemperature();
+      console.log("Sensor: ", sensor, ", temperature: ", temp);
+      mqttClient.publish('stillpi/sensors/identify/announce', JSON.stringify({ 'sensorid': sensor, 'class' : 'temperature', value: sensorControllers[index].getTemperature(), units: 'C'}), 
+        (err, granted) => {
+          if (typeof err !== "undefined") {
+            console.log("err: ", err);
+          };
+          if (typeof granted !== "undefined") {
+            console.log("granted: ", granted);
+          }
+        });
       });
 
-      // Update the seonsor list.  
-      sensorIDs = sensors;
-    });
+      console.log("Announcing completed.");
   };
+
+
 
   return {
     init: function () {
       console.log('Initializing sensor controller.');
 
       // Find MQTT broker IP address.  
-      var mdns = require('mdns');
       console.log('Searching for MQTT broker.');
       // This next line is required on Raspberry Pi per:
       //   https://github.com/agnat/node_mdns/issues/130
@@ -148,7 +118,6 @@ var sensorController = (function () {
           console.log('Connecting to MQTT broker.')
           //Setup the MQTT client that this sensor controller uses to receive sensor data from the master.  
           var options = {
-            keepalive: 10,
             username: brokerUsername,
             password: Buffer.alloc(brokerPassword.length, brokerPassword) // Passwords are buffers
           } 
@@ -157,11 +126,15 @@ var sensorController = (function () {
           mqttClient  = mqtt.connect(brokerAddress, options);
           // Subscribe to relevant topics.  
           mqttClient.on('connect', function () {
-              console.log('Connected to MQTT broker.')
-              mqttClient.subscribe('stillpi/sensors/identify/invoke');
-              mqttClient.subscribe('stillpi/sensors/ping');
-              announceSensors();
+            browser.stop() // You have the broaker, stop browsing.  
+            console.log('Connected to MQTT broker.')
+            mqttClient.subscribe('stillpi/sensors/identify/invoke');
+            mqttClient.subscribe('stillpi/sensors/ping');
+            announceSensors();
           }); 
+          mqttClient.on("error",function(error){
+            console.log("MQTT connection error");
+          });
           // Setup handler to dispatch incoming MQTT messages.  
           mqttClient.on('message', mqttMessageHandler);
 
@@ -170,24 +143,30 @@ var sensorController = (function () {
           .then( function( sensors ) {
             sensorIDs = sensors;
             console.log(sensors);
-            for (var currentSensor of sensors) {
-                // get instance of temperature sensor
-                W1Temp.getSensor(currentSensor)
-                .then( function (sensor) {
-                  // Setup handler for sensor temperature changes.  
-                  sensor.on('change', sensorHandler);
-                });
-            }
-            // announceSensors();
+
+            // Setup array of sensor controllers.  
+            sensorIDs.forEach(sensor => {
+              W1Temp.getSensor(sensor).then(function(sensorInstance) {
+                sensorControllers.push(sensorInstance);
+                sensorInstance.on('change', sensorHandler);
+                // console.log("sensorControllers: ", sensorControllers);
+              });
+            });
+            
+
+            // Schedule periodic process every 1 second.
+            // setInterval( () => {
+
+            //   if( !mqttClient.connected ) {
+            //     console.log( "Reconnecting to MQTT broker" );
+            //     mqttClient.reconnect();
+            //   }
+            // }, 15000);
           })
         }
       });
       browser.start();
 
-      // Schedule periodic scan for new sensors every 5 minutes.
-      // setInterval( () => {
-      //   updateSensors();
-      // }, 300000);
       
       
     },
@@ -196,21 +175,6 @@ var sensorController = (function () {
       return sensors;
     },
 
-    updateSensors: function () {
-      W1Temp.getSensorsUids()
-      .then( function( sensors ) {
-        sensorIDs = sensors;
-        console.log(sensors);
-        for (var currentSensor of sensors) {
-            // get instance of temperature sensor
-            W1Temp.getSensor(currentSensor)
-            .then( function (sensor) {
-              // Setup handler for sensor temperature changes.  
-              sensor.on('change', sensorHandler);
-            });
-        }
-      });
-    }
   };
 
 })();
@@ -239,4 +203,4 @@ var controller = (function (sensorCtrl, mqttCtrl) {
 })(sensorController, mqttController);
 
 
-controller.init()
+controller.init();
