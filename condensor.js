@@ -1,3 +1,6 @@
+var config = require('./configController.js');
+
+
 var sensorController = (function () {
   var W1Temp = require('w1temp');
   var mqtt = require('mqtt');
@@ -12,13 +15,18 @@ var sensorController = (function () {
   var sensorIDs = [];
   var sensorControllers = [];
  
-  
-
-
   var sensorHandler = function (temperature) {
+    var sensorInfo = {
+      '28-021840339bff': 'dephleg', 
+      '28-0218402ee7ff': 'product'
+    };
+
     var num = this.file.split('/').length - 2;
-    console.log('Sensor UID:', this.file.split('/')[num], 'Temperature: ', temperature.toFixed(3), '°C   ');
-    mqttClient.publish('stillpi/sensors/report', JSON.stringify({ 'sensorid': this.file.split('/')[num], 'value': temperature.toFixed(3), units: 'C'}), 
+    var sensorID = this.file.split('/')[num];
+    // console.log("num = ", sensorID, ", sensorInfo = ", sensorInfo);
+    console.log('Sensor UID:', this.file.split('/')[num], 'Temperature: ', temperature.toFixed(3), '°C, MQTT topic: ', 'stillpi/condenser/temperature', ', MQTT message: ', { condenser: sensorInfo[sensorID], temperature: temperature, units: 'C'});
+    // How to get sensor ID:     'sensorid': this.file.split('/')[num]
+    mqttClient.publish('stillpi/condenser/temperature', JSON.stringify({ condenser: sensorInfo[sensorID], temperature: temperature.toFixed(3), units: 'C'}), 
       (err, granted) => {
         if (typeof err !== "undefined") {
           console.log("err: ", err);
@@ -31,78 +39,76 @@ var sensorController = (function () {
 
 
   var mqttMessageHandler = function (topic, message) {
+
+    // Messages come in a character buffers and need to be converted to JSON.  
+    var jsonMessage = JSON.parse(message.toString('utf8'));
+
     console.log( '  sensorController:mqttMessageHandler:topic: ', topic);
-    console.log( '  sensorController:mqttMessageHandler:message: ', message.toString('utf8'));
-    // Dispatch messages to the relevant handler.  
+    console.log( '  sensorController:mqttMessageHandler:message: ', jsonMessage);
+
+    //  Dispatch messages to the relevant handler.  
     switch (topic) {
-      case 'stillpi/sensors/identify/invoke':
-        console.log('Announce message recieved.');
-	      var sensorClass = JSON.parse(message.toString('utf8')).class;
-        if (sensorClass === 'all' || sensorClass === 'temperature') {
-            console.log('Announcing sensors.');
-            announceSensors();
+      case 'stillpi/condenser/paramUpdate':  // UI change to one or more parameters.  
+        console.log('Parameter update message recieved: ', jsonMessage);
+        console.log("Current configuration object: ", global.configProxy);
+        if (jsonMessage.action === 'update') {
+          switch (jsonMessage.value.param) {
+            case 'power':
+              global.configProxy[jsonMessage.value.condenser].state = jsonMessage.value.value;
+              break;
+            case 'mode':
+              global.configProxy[jsonMessage.value.condenser].mode = jsonMessage.value.value;
+              break;
+            case 'valveSetting':
+              global.configProxy[jsonMessage.value.condenser].valveSetting = jsonMessage.value.value;
+              break;
+            case 'targetTemp':
+              global.configProxy[jsonMessage.value.condenser].targetTemp = jsonMessage.value.value;
+              break;
+          };
+          console.log("Updated configuration object: ", global.configProxy);
+          config.configController.saveConfig();
+          //  announce again to update all UI clients.
+          announceCondenserController();
         }
+
+        // global.configProxy.dephleg.state = jsonMessage.dephleg.state;
         break;
 
-      case 'stillpi/sensors/ping':
-        var pingMessageType = JSON.parse(message.toString('utf8')).type;
-        // console.log("Ping message type: ", pingMessageType);
+      case 'stillpi/condenser/identify/invoke':
+        console.log('Announce message recieved.');
+        announceCondenserController();
+        break;
+  
+      case 'stillpi/condenser/ping':
+	      console.log("Ping received: ", jsonMessage);
+	      if (jsonMessage.type === 'call') {
+	        mqttClient.publish('stillpi/condenser/ping', JSON.stringify({'type': 'response'}));
+	      }
+        break;
 
-        if (pingMessageType === 'call') {
-          var pingSensorID = JSON.parse(message.toString('utf8')).sensorid;
-          // var pingSensorID = message.sensorid;
-          // console.log('Ping for sensor: ', pingSensorID);
-          if (sensorIDs.includes(pingSensorID)) {
-            console.log('Responding to ping on sensor: ', pingSensorID);
-            mqttClient.publish('stillpi/sensors/ping', JSON.stringify({'type': 'response', 'sensorid': pingSensorID}), 
-              (err, granted) => {
-                if (typeof err !== "undefined") {
-                  console.log("err: ", err);
-                };
-                if (typeof granted !== "undefined") {
-                  console.log("granted: ", granted);
-                }
-              });
-          }
-        } 
-        // else {
-        //   console.log("Skipping ping response message.", JSON.parse(message.toString('utf8')), (pingMessageType === 'call'));
-        // }
-      break;
+      case 'stillpi/condenser/getParams':
+        console.log("Parameter request received: ", jsonMessage);
+        if (jsonMessage.type === 'request') {
+          mqttClient.publish('stillpi/condenser/getParams', JSON.stringify({'type': 'response', 'config': global.configProxy}));
+        }
+        break;
+  
+  
     }
   };
 
+  var announceCondenserController = function () {
+    console.log("Announcing condenser controller");
 
-  var announceSensors = function () {
+    // RESPOND WITH CURRENT CONFIGURATION Object
+    mqttClient.publish('stillpi/condenser/identify/announce', JSON.stringify(global.configProxy));
+  }
 
-    if (typeof sensorIDs !== "undefined") {
-      console.log("ANNOUNCE SENSORS");
-    }
-
-    sensorIDs.forEach( (sensor, index) => {
-
-      console.log('Announcing: ', sensor, "MQTT broker connected: ", mqttClient.connected);
-      var temp = sensorControllers[index].getTemperature();
-      console.log("Sensor: ", sensor, ", temperature: ", temp);
-      mqttClient.publish('stillpi/sensors/identify/announce', JSON.stringify({ 'sensorid': sensor, 'class' : 'temperature', value: sensorControllers[index].getTemperature(), units: 'C'}), 
-        (err, granted) => {
-          if (typeof err !== "undefined") {
-            console.log("err: ", err);
-          };
-          if (typeof granted !== "undefined") {
-            console.log("granted: ", granted);
-          }
-        });
-      });
-
-      console.log("Announcing completed.");
-  };
-
-
-
+  
   return {
     init: function () {
-      console.log('Initializing sensor controller.');
+      console.log('Initializing condenser controller.');
 
       // Find MQTT broker IP address.  
       console.log('Searching for MQTT broker.');
@@ -128,9 +134,12 @@ var sensorController = (function () {
           mqttClient.on('connect', function () {
             browser.stop() // You have the broaker, stop browsing.  
             console.log('Connected to MQTT broker.')
-            mqttClient.subscribe('stillpi/sensors/identify/invoke');
-            mqttClient.subscribe('stillpi/sensors/ping');
-            announceSensors();
+            mqttClient.subscribe('stillpi/condenser/paramUpdate');
+	    mqttClient.subscribe('stillpi/condenser/identify/invoke');
+            mqttClient.subscribe('stillpi/condenser/ping');
+            mqttClient.subscribe('stillpi/condenser/getParams');
+            announceCondenserController();
+            // announceSensors();
           }); 
           mqttClient.on("error",function(error){
             console.log("MQTT connection error");
@@ -166,9 +175,6 @@ var sensorController = (function () {
         }
       });
       browser.start();
-
-      
-      
     },
 
     getSensorUIDs: function () {
@@ -195,8 +201,10 @@ var controller = (function (sensorCtrl, mqttCtrl) {
 
       // Initialize the sensor controller.  
       sensorController.init();
+      config.configController.init();
 
       console.log('Application has started.');  
+      console.log("Current config object: ", global.configProxy);
     }
 }
 
