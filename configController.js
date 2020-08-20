@@ -1,5 +1,6 @@
 
 var jsonfile = require('jsonfile');
+const configFilename = "/home/pi/condensorController/configuration/config.json";
 
 // START CONFIGURATION CONTROLLER
     /*
@@ -58,14 +59,14 @@ global.configProxy = new Proxy(config, configProxyHandler);
 
 var readConfig = function () {
 
-    global.config = jsonfile.readFileSync('./configuration/config.json');
+    global.config = jsonfile.readFileSync(configFilename);
 };
 
 var saveConfig = function () {
     
     console.log('Saving config');
     // console.log('Saving config: ', global.config);
-    jsonfile.writeFile('./configuration/config.json', global.config, function (err) {
+    jsonfile.writeFile(configFilename, global.config, function (err) {
         if (err === null) {
             console.error('Saving config succeeded.');
         } else {
@@ -84,7 +85,8 @@ var configController = (function () {
 
             // Check if a configuration file exists
             var fs = require('fs');
-            if (fs.existsSync('./configuration/config.json')) {
+            console.log("Configuration filename: ", configFilename, "  ", fs.existsSync(configFilename));
+            if (fs.existsSync(configFilename)) {
                 console.log('Configuration file exists.');
                 readConfig();
                 configProxy = new Proxy(config, configProxyHandler);
