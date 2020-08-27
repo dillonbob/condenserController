@@ -6,7 +6,7 @@ var valveController = (function () {
   const raspi = require('raspi');
   const pwm = require('raspi-pwm');
   const liquidPID = require('liquid-pid');
-  const pidInterval = 5;  // In seconds.  PID update interval.  
+  const pidInterval = 2;  // In seconds.  PID update interval.  
   const maxPidPower = 1000;
   const minAutoValvePosition = 10;  //  In auto mode the valve can never completely close otherwise we cannot read water temperature.  
   const pidParms = {
@@ -25,7 +25,7 @@ var valveController = (function () {
   // This function fires periodically (pidInterval) and updates the PID library and adjusts the valve.  
   const valveIntervalStart = function () {
     // Only process if the condenser is in 'auto' mode and power is on.  
-    console.log("Starting periodic valve PID control function ...");
+    // console.log("Starting periodic valve PID control function ...");
     // global.configProxy[condenser].targetTemp
 
     pidProcess('product');
@@ -33,7 +33,7 @@ var valveController = (function () {
   };
 
 const pidProcess = function (condenser) {
-  console.log("Condenser: ", condenser, ", config object: ", global.configProxy[condenser]);
+  // console.log("Condenser: ", condenser, ", config object: ", global.configProxy[condenser]);
   if ((global.configProxy[condenser].mode === 'auto') && (global.configProxy[condenser].state === 'on')) {
     let currentTemp = sensorController.getTemperature(condenser);
     let pidOutput;
@@ -55,7 +55,7 @@ const pidProcess = function (condenser) {
     if (valvePosition < minAutoValvePosition) {
       valvePosition = minAutoValvePosition;
     };
-    console.log("current temperature for ", condenser, " condenser: ", currentTemp, ", target Temp: ", targetTemp, ", PID output: ", pidOutput, ", valve position: ", valvePosition, "%");
+    console.log("current temperature for ", condenser, " condenser: ", currentTemp, ", target Temp: ", targetTemp, ", PID output: ", pidOutput, ", valve position: ", valvePosition, "%\n\n");
 
     valveController.setValvePosition(condenser, valvePosition);
     valveController.uiValvePosition(condenser, valvePosition);
@@ -181,7 +181,7 @@ var sensorController = (function () {
     sensorTemps[condenser] = temperature;
 
     // console.log("num = ", sensorID, ", sensorInfo = ", sensorInfo);
-    console.log('Sensor UID:', this.file.split('/')[num], 'Temperature: ', temperature.toFixed(3), '°C, MQTT topic: ', 'stillpi/condenser/temperature', ', MQTT message: ', { condenser: condenser, temperature: temperature, units: 'C'});
+    // console.log('Sensor UID:', this.file.split('/')[num], 'Temperature: ', temperature.toFixed(3), '°C, MQTT topic: ', 'stillpi/condenser/temperature', ', MQTT message: ', { condenser: condenser, temperature: temperature, units: 'C'});
     // How to get sensor ID:     'sensorid': this.file.split('/')[num]
     mqttClient.publish('stillpi/condenser/temperature', JSON.stringify({ condenser: sensorInfo[sensorID], temperature: temperature.toFixed(3), units: 'C'}), 
       (err, granted) => {
@@ -201,14 +201,14 @@ var sensorController = (function () {
     // Messages come in a character buffers and need to be converted to JSON.  
     var jsonMessage = JSON.parse(message.toString('utf8'));
 
-    console.log( '  sensorController:mqttMessageHandler:topic: ', topic);
-    console.log( '  sensorController:mqttMessageHandler:message: ', jsonMessage);
+    // console.log( '  sensorController:mqttMessageHandler:topic: ', topic);
+    // console.log( '  sensorController:mqttMessageHandler:message: ', jsonMessage);
 
     //  Dispatch messages to the relevant handler.  
     switch (topic) {
       case 'stillpi/condenser/paramUpdate':  // UI change to one or more parameters.  
-        console.log('Parameter update message recieved: ', jsonMessage);
-        console.log("Current configuration object: ", global.configProxy);
+        // console.log('Parameter update message recieved: ', jsonMessage);
+        // console.log("Current configuration object: ", global.configProxy);
         if (jsonMessage.action === 'update') {
           switch (jsonMessage.value.param) {
 
@@ -221,7 +221,7 @@ var sensorController = (function () {
                   valveController.setValvePosition(jsonMessage.value.condenser, global.configProxy[jsonMessage.value.condenser].valveSetting);
                 } 
                 else {  // 'auto' mode initialize the PID controller.  
-                  console.log("Power turned on.  Initializing the PID controller, setting the valve position to the starting value and updating the UI with that position.")
+                  // console.log("Power turned on.  Initializing the PID controller, setting the valve position to the starting value and updating the UI with that position.")
                   valveController.initAutoMode(jsonMessage.value.condenser);
                 }
               }
@@ -247,10 +247,10 @@ var sensorController = (function () {
 
             case 'targetTemp':
               global.configProxy[jsonMessage.value.condenser].targetTemp = jsonMessage.value.value;
-              // valveController.initPID(jsonMessage.value.condenser, jsonMessage.value.value);
+              valveController.initPID(jsonMessage.value.condenser, jsonMessage.value.value);
               break;
           };
-          console.log("Updated configuration object: ", global.configProxy);
+          // console.log("Updated configuration object: ", global.configProxy);
           config.configController.saveConfig();
           //  announce again to update all UI clients.
           announceCondenserController();
@@ -260,19 +260,19 @@ var sensorController = (function () {
         break;
 
       case 'stillpi/condenser/identify/invoke':
-        console.log('Announce message recieved.');
+        // console.log('Announce message recieved.');
         announceCondenserController();
         break;
   
       case 'stillpi/condenser/ping':
-	      console.log("Ping received: ", jsonMessage);
+	      // console.log("Ping received: ", jsonMessage);
 	      if (jsonMessage.type === 'call') {
 	        mqttClient.publish('stillpi/condenser/ping', JSON.stringify({'type': 'response'}));
 	      }
         break;
 
       case 'stillpi/condenser/getParams':
-        console.log("Parameter request received: ", jsonMessage);
+        // console.log("Parameter request received: ", jsonMessage);
         if (jsonMessage.type === 'request') {
           mqttClient.publish('stillpi/condenser/getParams', JSON.stringify({'type': 'response', 'config': global.configProxy}));
         }
@@ -283,7 +283,7 @@ var sensorController = (function () {
   };
 
   var announceCondenserController = function () {
-    console.log("Announcing condenser controller");
+    // console.log("Announcing condenser controller");
 
     // RESPOND WITH CURRENT CONFIGURATION Object
     mqttClient.publish('stillpi/condenser/identify/announce', JSON.stringify(global.configProxy));
@@ -342,7 +342,7 @@ var sensorController = (function () {
           W1Temp.getSensorsUids()
           .then( function( sensors ) {
             sensorIDs = sensors;
-            console.log(sensors);
+            // console.log(sensors);
 
             // Setup array of sensor controllers.  
             sensorIDs.forEach(sensor => {
