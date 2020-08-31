@@ -8,7 +8,7 @@ var valveController = (function () {
   const liquidPID = require('liquid-pid');
   const pidInterval = 2;  // In seconds.  PID update interval.  
   const maxPidPower = 1000;
-  const minAutoValvePosition = 10;  //  In auto mode the valve can never completely close otherwise we cannot read water temperature.  
+  const minAutoValvePosition = 20;  //  In auto mode the valve can never completely close otherwise we cannot read water temperature.  
   const pidParms = {
     Kp: 25,
     Ki: 1000,
