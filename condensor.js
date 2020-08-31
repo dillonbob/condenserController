@@ -15,6 +15,7 @@ var valveController = (function () {
     Kd: 9
   };
   const pidValveStartingPosition = 10;   //  This is the valve starting position for PID control.  There needs to be enough flow to measure the condenser water temperature.  Valve position is expressed from 0 - 100;
+  var tempSensorsOnline = { 'dephleg' : false, 'product' : false };  //  Tracks wether the remote temperature sensor modules are available or not.  This is internal tracking to the valve controller.  The sensorController manages the communications with the remote module.  
 
   var productValve;  // PWM controls
   var dephlegValve;
@@ -32,47 +33,47 @@ var valveController = (function () {
     pidProcess('dephleg');
   };
 
-const pidProcess = function (condenser) {
-  // console.log("Condenser: ", condenser, ", config object: ", global.configProxy[condenser]);
-  if ((global.configProxy[condenser].mode === 'auto') && (global.configProxy[condenser].state === 'on')) {
-    let currentTemp = sensorController.getTemperature(condenser);
-    let pidOutput;
-    let targetTemp;
-    
-    switch (condenser) {
-      case 'product':
-        pidOutput = productPid.calculate(currentTemp);
-        targetTemp = productPid.getRefTemperature();
+  const pidProcess = function (condenser) {
+    // console.log("Condenser: ", condenser, ", config object: ", global.configProxy[condenser]);
+    if ((global.configProxy[condenser].mode === 'auto') && (global.configProxy[condenser].state === 'on')) {
+      let currentTemp = sensorController.getTemperature(condenser);
+      let pidOutput;
+      let targetTemp;
+      
+      switch (condenser) {
+        case 'product':
+          pidOutput = productPid.calculate(currentTemp);
+          targetTemp = productPid.getRefTemperature();
+          break;
+
+        case 'dephleg':
+        pidOutput = dephlegPid.calculate(currentTemp);
+        targetTemp = dephlegPid.getRefTemperature();
         break;
+      };
 
-      case 'dephleg':
-      pidOutput = dephlegPid.calculate(currentTemp);
-      targetTemp = dephlegPid.getRefTemperature();
-      break;
-    };
+      let valvePosition = (1 - (pidOutput/maxPidPower)) * 100;  //  Ensure that the valve never closes more than the minimum required to read temperature. 
+      if (valvePosition < minAutoValvePosition) {
+        valvePosition = minAutoValvePosition;
+      };
+      console.log("current temperature for ", condenser, " condenser: ", currentTemp, ", target Temp: ", targetTemp, ", PID output: ", pidOutput, ", valve position: ", valvePosition, "%\n\n");
 
-    let valvePosition = (1 - (pidOutput/maxPidPower)) * 100;  //  Ensure that the valve never closes more than the minimum required to read temperature. 
-    if (valvePosition < minAutoValvePosition) {
-      valvePosition = minAutoValvePosition;
-    };
-    console.log("current temperature for ", condenser, " condenser: ", currentTemp, ", target Temp: ", targetTemp, ", PID output: ", pidOutput, ", valve position: ", valvePosition, "%\n\n");
-
-    valveController.setValvePosition(condenser, valvePosition);
-    valveController.uiValvePosition(condenser, valvePosition);
-  }
-};
-
- 
-  const initAutoMode = function (condenser) {
-    valveController.initPID(condenser);                   //  Initialize the PID controller to start a new session.  All internal parameters reset.  
-    // console.log("initAutoMode pidValveStartingPosition: ", pidValveStartingPosition);
-    valveController.setValvePosition(condenser, pidValveStartingPosition);       //  Put the valve in the starting position for PID control.  
-    valveController.uiValvePosition(condenser, pidValveStartingPosition);        //  Update the UI with the new position.  
+      valveController.setValvePosition(condenser, valvePosition);
+      valveController.uiValvePosition(condenser, valvePosition);
+    }
   };
 
-  var fToC = function (temp) {
-    return (temp - 32) * (5 / 9);
-  };
+  
+    const initAutoMode = function (condenser) {
+      valveController.initPID(condenser);                   //  Initialize the PID controller to start a new session.  All internal parameters reset.  
+      // console.log("initAutoMode pidValveStartingPosition: ", pidValveStartingPosition);
+      valveController.setValvePosition(condenser, pidValveStartingPosition);       //  Put the valve in the starting position for PID control.  
+      valveController.uiValvePosition(condenser, pidValveStartingPosition);        //  Update the UI with the new position.  
+    };
+
+    var fToC = function (temp) {
+      return (temp - 32) * (5 / 9);
+    };
 
   return {
     init: function () {
@@ -145,12 +146,27 @@ const pidProcess = function (condenser) {
     getPidValveStartingPosition: function () {
       return pidValveStartingPosition;
     },
+
+    sensorOnline: function (condenser, online) {
+      tempSensorsOnline[condenser] = online;
+
+      if (!online) {
+        // Turn the condensor controller off.
+        global.configProxy[condenser].state = 'off';
+
+        // Update the UI.  
+        sensorController.announceCondenser();
+
+        // Close the valve.  
+        valveController.setValvePosition(condenser, 0);
+      }
+    }
   };
 })();
 
 
 var sensorController = (function () {
-  var W1Temp = require('w1temp');
+  // var W1Temp = require('w1temp');
   var mqtt = require('mqtt');
   var mqttClient;
   var mdns = require('mdns');
@@ -161,38 +177,42 @@ var sensorController = (function () {
   var brokerPassword = 'pi';
   var connectToBroker = true;
   let initCompleted = false;
-  var sensorIDs = [];
-  var sensorControllers = [];
+  // var sensorIDs = [];
+  // var sensorControllers = [];
   let sensorTemps = {
     'dephleg': 0,
     'product': 0
   }
+  var sensorMaintenanceInterval = 10;   // In seconds.  
+  // var pingMessagesOut = [];
+  var pingMessagesIn = [];
+
  
-  var sensorHandler = function (temperature) {
-    var sensorInfo = {
-      '28-021840339bff': 'dephleg', 
-      '28-0218402ee7ff': 'product'
-    };
+  // var sensorHandler = function (temperature) {
+  //   var sensorInfo = {
+  //     '28-021840339bff': 'dephleg', 
+  //     '28-0218402ee7ff': 'product'
+  //   };
 
-    var num = this.file.split('/').length - 2;
-    var sensorID = this.file.split('/')[num];
-    let condenser = sensorInfo[sensorID];
+  //   var num = this.file.split('/').length - 2;
+  //   var sensorID = this.file.split('/')[num];
+  //   let condenser = sensorInfo[sensorID];
 
-    sensorTemps[condenser] = temperature;
+  //   sensorTemps[condenser] = temperature;
 
-    // console.log("num = ", sensorID, ", sensorInfo = ", sensorInfo);
-    // console.log('Sensor UID:', this.file.split('/')[num], 'Temperature: ', temperature.toFixed(3), '°C, MQTT topic: ', 'stillpi/condenser/temperature', ', MQTT message: ', { condenser: condenser, temperature: temperature, units: 'C'});
-    // How to get sensor ID:     'sensorid': this.file.split('/')[num]
-    mqttClient.publish('stillpi/condenser/temperature', JSON.stringify({ condenser: sensorInfo[sensorID], temperature: temperature.toFixed(3), units: 'C'}), 
-      (err, granted) => {
-        if (typeof err !== "undefined") {
-          console.log("err: ", err);
-        };
-        if (typeof granted !== "undefined") {
-          console.log("granted: ", granted);
-        }
-      });
-  };
+  //   // console.log("num = ", sensorID, ", sensorInfo = ", sensorInfo);
+  //   // console.log('Sensor UID:', this.file.split('/')[num], 'Temperature: ', temperature.toFixed(3), '°C, MQTT topic: ', 'stillpi/condenser/temperature', ', MQTT message: ', { condenser: condenser, temperature: temperature, units: 'C'});
+  //   // How to get sensor ID:     'sensorid': this.file.split('/')[num]
+  //   mqttClient.publish('stillpi/condenser/temperature', JSON.stringify({ condenser: sensorInfo[sensorID], temperature: temperature.toFixed(3), units: 'C'}), 
+  //     (err, granted) => {
+  //       if (typeof err !== "undefined") {
+  //         console.log("err: ", err);
+  //       };
+  //       if (typeof granted !== "undefined") {
+  //         console.log("granted: ", granted);
+  //       }
+  //     });
+  // };
 
 
 
@@ -225,7 +245,7 @@ var sensorController = (function () {
                   valveController.initAutoMode(jsonMessage.value.condenser);
                 }
               }
-              else {   //  Powering off
+              else {   //  Power off
                 valveController.setValvePosition(jsonMessage.value.condenser, 0);
               };
               break;
@@ -266,9 +286,14 @@ var sensorController = (function () {
   
       case 'stillpi/condenser/ping':
 	      // console.log("Ping received: ", jsonMessage);
-	      if (jsonMessage.type === 'call') {
-	        mqttClient.publish('stillpi/condenser/ping', JSON.stringify({'type': 'response'}));
-	      }
+        if (jsonMessage.type === 'response') {
+          // If the sensor is not already in the ping sensors list, add it.  
+          // console.log("pingMessagesIn: ", pingMessagesIn)
+          if(!pingMessagesIn.find(function (sensor) { return sensor === jsonMessage.sensorid; })) {
+              pingMessagesIn.push(jsonMessage.sensorid);
+              // console.log("pingMessagesIn: ", pingMessagesIn)
+          }
+        }
         break;
 
       case 'stillpi/condenser/getParams':
@@ -277,7 +302,26 @@ var sensorController = (function () {
           mqttClient.publish('stillpi/condenser/getParams', JSON.stringify({'type': 'response', 'config': global.configProxy}));
         }
         break;
-  
+    
+      case 'stillpi/condenser/report':
+        // console.log("Temperature sensor reading received: ", jsonMessage);
+
+        //  Record new temperature for use by PID.  
+        sensorTemps[jsonMessage.sensorid] = jsonMessage.units=='F'?fToC(parseFloat(jsonMessage.value).toFixed(3)):parseFloat(jsonMessage.value).toFixed(3);
+        // console.log("sensorTemps[]: ", sensorTemps);
+
+        mqttClient.publish(      //  Publish the new temperature to the master module to distriubte to UI clients.  
+          'stillpi/condenser/temperature', 
+          JSON.stringify({condenser: jsonMessage.sensorid, temperature: jsonMessage.value, units: jsonMessage.units}), 
+          (err, granted) => {
+            if (typeof err !== "undefined") {
+              console.log("err: ", err);
+            };
+            if (typeof granted !== "undefined") {
+              console.log("granted: ", granted);
+          }
+        });
+        break;
   
     }
   };
@@ -296,7 +340,62 @@ var sensorController = (function () {
     }   
   }
 
+
+  // This function runs periodically to check if sensors that used to be available are now unavailable.  
+  var pingIntervalStart = function () {
+    // console.log("sensorController: ping maintenance function:", pingMessagesIn);
+
+    // Check to see if the dephleg temp sensor responded.  
+    if (!pingMessagesIn.find(function (sensor) { return sensor === 'dephleg';})) {
+      console.log("Dephleg temp senser didn't answer.");
+      valveController.sensorOnline('dephleg', false);
+      mqttClient.publish(      //  Publish indicator to the master module to distriubte to UI clients.  
+        'stillpi/condenser/temperature', 
+        JSON.stringify({ condenser: 'dephleg', temperature: '---', units: 'C'}), 
+        (err, granted) => {
+          if (typeof err !== "undefined") {
+            console.log("err: ", err);
+          };
+          if (typeof granted !== "undefined") {
+            console.log("granted: ", granted);
+        }
+      });
+    } else {
+      // console.log("Dephleg temp senser answered.");
+      valveController.sensorOnline('dephleg', true);
+    }
+
+    // Check to see if the dephleg temp sensor responded.  
+    if (!pingMessagesIn.find(function (sensor) { return sensor === 'dephleg';})) {
+      console.log("Product condenser temp senser didn't answer.");
+      valveController.sensorOnline('product', false);
+      mqttClient.publish(      //  Publish indicator to the master module to distriubte to UI clients.  
+        'stillpi/condenser/temperature', 
+        JSON.stringify({ condenser: 'product', temperature: '---', units: 'C'}), 
+        (err, granted) => {
+          if (typeof err !== "undefined") {
+            console.log("err: ", err);
+          };
+          if (typeof granted !== "undefined") {
+            console.log("granted: ", granted);
+        }
+      });
+    } else {
+      // console.log("Product condenser temp senser answered.");
+      valveController.sensorOnline('product', true);
+    }
+
+
+    // console.log("Pinging dephleg sensor.");
+    mqttClient.publish('stillpi/condenser/ping', JSON.stringify({"type": "call", "sensorid": 'dephleg'}));
+    // console.log("Pinging product sensor.");
+    mqttClient.publish('stillpi/condenser/ping', JSON.stringify({"type": "call", "sensorid": 'product'}));
+
+    // Empty the pingMessages array to start accumulating new ping responses for the upcoming interval.  
+    pingMessagesIn = [];
+  };
   
+    
   return {
     init: function () {
       console.log('Initializing condenser controller.');
@@ -329,6 +428,7 @@ var sensorController = (function () {
 	          mqttClient.subscribe('stillpi/condenser/identify/invoke');
             mqttClient.subscribe('stillpi/condenser/ping');
             mqttClient.subscribe('stillpi/condenser/getParams');
+            mqttClient.subscribe('stillpi/condenser/report');
             announceCondenserController();
             initCompleted = true;
           }); 
@@ -338,31 +438,36 @@ var sensorController = (function () {
           // Setup handler to dispatch incoming MQTT messages.  
           mqttClient.on('message', mqttMessageHandler);
 
-          // Setup temperature sensor library.  
-          W1Temp.getSensorsUids()
-          .then( function( sensors ) {
-            sensorIDs = sensors;
-            // console.log(sensors);
+          // Setup sensor maintenance interval function.  
+          var intervalID = setInterval( function() {
+            pingIntervalStart();
+          }, sensorMaintenanceInterval * 1000); // The interval is set at the top of this file.  
 
-            // Setup array of sensor controllers.  
-            sensorIDs.forEach(sensor => {
-              W1Temp.getSensor(sensor).then(function(sensorInstance) {
-                sensorControllers.push(sensorInstance);
-                sensorInstance.on('change', sensorHandler);
-                // console.log("sensorControllers: ", sensorControllers);
-              });
-            });
+        // // Setup temperature sensor library.  
+          // W1Temp.getSensorsUids()
+          // .then( function( sensors ) {
+          //   sensorIDs = sensors;
+          //   // console.log(sensors);
+
+          //   // Setup array of sensor controllers.  
+          //   sensorIDs.forEach(sensor => {
+          //     W1Temp.getSensor(sensor).then(function(sensorInstance) {
+          //       sensorControllers.push(sensorInstance);
+          //       sensorInstance.on('change', sensorHandler);
+          //       // console.log("sensorControllers: ", sensorControllers);
+          //     });
+          //   });
             
 
-            // Schedule periodic process every 1 second.
-            // setInterval( () => {
+          //   // Schedule periodic process every 1 second.
+          //   // setInterval( () => {
 
-            //   if( !mqttClient.connected ) {
-            //     console.log( "Reconnecting to MQTT broker" );
-            //     mqttClient.reconnect();
-            //   }
-            // }, 15000);
-          })
+          //   //   if( !mqttClient.connected ) {
+          //   //     console.log( "Reconnecting to MQTT broker" );
+          //   //     mqttClient.reconnect();
+          //   //   }
+          //   // }, 15000);
+          // })
         }
       });
       browser.start();
@@ -378,6 +483,10 @@ var sensorController = (function () {
 
     getTemperature: function (condenser) {
       return sensorTemps[condenser];
+    },
+
+    announceCondenser: function () {
+      announceCondenserController();
     },
 
     publishMqttMessage: function (topic, message) {
