@@ -64,13 +64,13 @@ var readConfig = function () {
 
 var saveConfig = function () {
     
-    console.log('Saving config');
+    // console.log('Saving config');
     // console.log('Saving config: ', global.config);
     jsonfile.writeFile(configFilename, global.config, function (err) {
         if (err === null) {
-            console.error('Saving config succeeded.');
+            // console.error('Saving config succeeded.');
         } else {
-            console.error('Saving config failed: ', err);
+            // console.error('Saving config failed: ', err);
         }
     });
 };

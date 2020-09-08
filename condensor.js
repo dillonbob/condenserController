@@ -5,16 +5,26 @@ var config = require('./configController.js');
 var valveController = (function () {
   const raspi = require('raspi');
   const pwm = require('raspi-pwm');
-  const liquidPID = require('liquid-pid');
-  const pidInterval = 2;  // In seconds.  PID update interval.  
-  const maxPidPower = 1000;
+  // const liquidPID = require('liquid-pid');
+  const pidControl = require('node-pid-controller');
+  const pidInterval = 1;  // In seconds.  PID update interval.  
+  const maxPidPower = 100;
   const minAutoValvePosition = 20;  //  In auto mode the valve can never completely close otherwise we cannot read water temperature.  
-  const pidParms = {
-    Kp: 25,
-    Ki: 1000,
-    Kd: 9
+  const pidParms = {  //   http://blog.clanlaw.org.uk/pid-loop-tuning.html
+    k_p: 0.4,   
+    k_i: 0, 
+    k_d: 0.8,
+    i_max: 30
   };
-  const pidValveStartingPosition = 10;   //  This is the valve starting position for PID control.  There needs to be enough flow to measure the condenser water temperature.  Valve position is expressed from 0 - 100;
+  // const pidParms = {  //   http://blog.clanlaw.org.uk/pid-loop-tuning.html
+  //   k_p: 6,   
+  //   k_i: 0.3, 
+  //   k_d: 0.9,
+  //   i_max: 40
+  // };
+  var curDephlegValvePosition = minAutoValvePosition,
+      curProductValvePosition = minAutoValvePosition;
+  const pidValveStartingPosition = minAutoValvePosition;   //  This is the valve starting position for PID control.  There needs to be enough flow to measure the condenser water temperature.  Valve position is expressed from 0 - 100;
   var tempSensorsOnline = { 'dephleg' : false, 'product' : false };  //  Tracks wether the remote temperature sensor modules are available or not.  This is internal tracking to the valve controller.  The sensorController manages the communications with the remote module.  
 
   var productValve;  // PWM controls
@@ -34,6 +44,7 @@ var valveController = (function () {
   };
 
   const pidProcess = function (condenser) {
+    var valvePosition;
     // console.log("Condenser: ", condenser, ", config object: ", global.configProxy[condenser]);
     if ((global.configProxy[condenser].mode === 'auto') && (global.configProxy[condenser].state === 'on')) {
       let currentTemp = sensorController.getTemperature(condenser);
@@ -42,21 +53,55 @@ var valveController = (function () {
       
       switch (condenser) {
         case 'product':
-          pidOutput = productPid.calculate(currentTemp);
-          targetTemp = productPid.getRefTemperature();
+          // pidOutput = productPid.calculate(currentTemp);
+          // targetTemp = productPid.getRefTemperature();
+          pidOutput = productPid.update(currentTemp);
+          targetTemp = fToC(global.configProxy[condenser].targetTemp);
           break;
 
         case 'dephleg':
-        pidOutput = dephlegPid.calculate(currentTemp);
-        targetTemp = dephlegPid.getRefTemperature();
-        break;
+          // pidOutput = dephlegPid.calculate(currentTemp);
+          // targetTemp = dephlegPid.getRefTemperature();
+          pidOutput = dephlegPid.update(currentTemp);
+          targetTemp = fToC(global.configProxy[condenser].targetTemp);
+          break;
       };
 
-      let valvePosition = (1 - (pidOutput/maxPidPower)) * 100;  //  Ensure that the valve never closes more than the minimum required to read temperature. 
-      if (valvePosition < minAutoValvePosition) {
-        valvePosition = minAutoValvePosition;
+      // if (pidOutput > 0) {  // No need for cooling.  Set to minimum openning value.  
+      //   valvePosition = minAutoValvePosition;
+      // } else {  //  Cooling required
+        if (condenser === 'product') {
+          curProductValvePosition += -pidOutput;
+          if( curProductValvePosition > 100 ) {
+            curProductValvePosition = 100;
+          } else if (curProductValvePosition < minAutoValvePosition) {
+            curProductValvePosition = minAutoValvePosition;
+          }
+          valvePosition = curProductValvePosition;
+        } else {    //  Dephleg
+          curDephlegValvePosition += -pidOutput;
+          if( curDephlegValvePosition > 100 ) {
+            curDephlegValvePosition = 100;
+          } else if (curDephlegValvePosition < minAutoValvePosition) {
+            curDephlegValvePosition = minAutoValvePosition;
+          }
+          valvePosition = curDephlegValvePosition;
+        }
+        // if (-pidOutput > 100) {  //  Ensure that the PID output is not greater than full value.    
+        //   valvePosition = 100;
+        // } else {
+        //   valvePosition = minAutoValvePosition + -pidOutput;
+        // }
+      // };
+
+
+      // console.log("current temperature for ", condenser, " condenser: ", currentTemp, ", target Temp: ", targetTemp, ", PID output: ", pidOutput, ", valve position: ", valvePosition, "%\n\n");
+      if ((global.configProxy[condenser].mode === 'auto') && (global.configProxy[condenser].state === 'on')) {
+        // var pidParams = productPid.getIntParams();
+        // console.log("pidParams: ", pidParams);
+        // console.log("PROCESSDATA - ", condenser, " - ", Date.now(), " - ", targetTemp, " - ", currentTemp, " - ", pidOutput, " - ", valvePosition, " - ", pidParams.P.toPrecision(3), " - ", pidParams.I.toPrecision(3), " - ", pidParams.D.toPrecision(3));
+        console.log("PROCESSDATA - ", condenser, " - ", Date.now(), " - ", targetTemp, " - ", currentTemp, " - ", pidOutput, " - ", valvePosition);
       };
-      console.log("current temperature for ", condenser, " condenser: ", currentTemp, ", target Temp: ", targetTemp, ", PID output: ", pidOutput, ", valve position: ", valvePosition, "%\n\n");
 
       valveController.setValvePosition(condenser, valvePosition);
       valveController.uiValvePosition(condenser, valvePosition);
@@ -86,12 +131,14 @@ var valveController = (function () {
       // dephlegValve.write(dephlegInit/100);
 
       // Initialize PID Controllers
-      if ((global.configProxy.product.state === 'on') && (global.configProxy.product.mode === 'auto')) {
-        initAutoMode('product');
-      }
-      if ((global.configProxy.dephleg.state === 'on') && (global.configProxy.dephleg.mode === 'auto')) {
-        initAutoMode('dephleg');
-      }
+      productPid = new pidControl(pidParms);
+      dephlegPid = new pidControl(pidParms);
+      // if ((global.configProxy.product.state === 'on') && (global.configProxy.product.mode === 'auto')) {
+      //   initAutoMode('product');
+      // }
+      // if ((global.configProxy.dephleg.state === 'on') && (global.configProxy.dephleg.mode === 'auto')) {
+      //   initAutoMode('dephleg');
+      // }
 
       // Setup a function to run periodically for PID mode of valve control.  
       setInterval( function() {
@@ -119,24 +166,34 @@ var valveController = (function () {
     },
 
     initPID: function (condenser) {
-      let tempParms = {
-        temp: {
-          ref: fToC(global.configProxy[condenser].targetTemp)         // Point temperature                                       
-        },
-        Pmax: maxPidPower,       // Max power (output),
+      // let tempParms = {
+      //   temp: {
+      //     ref: fToC(global.configProxy[condenser].targetTemp)         // Point temperature                                       
+      //   },
+      //   Pmax: maxPidPower,       // Max power (output),
         
-        // Tune the PID Controller
-        Kp: pidParms.Kp,           // PID: Kp
-        Ki: pidParms.Ki,         // PID: Ki
-        Kd: pidParms.Kd             // PID: Kd
-      }
-      console.log("Initialize ", condenser,"PID");
+      //   // Tune the PID Controller
+      //   Kp: pidParms.Kp,           // PID: Kp
+      //   Ki: pidParms.Ki,         // PID: Ki
+      //   Kd: pidParms.Kd             // PID: Kd
+      // }
+      // // console.log("Initialize ", condenser,"PID");
+      // if(condenser === 'product') {
+      //     productPid = new liquidPID(tempParms);
+      // }
+      // else {  // Dephleg
+      //   dephlegPid = new liquidPID(tempParms);
+      // }
+
       if(condenser === 'product') {
-          productPid = new liquidPID(tempParms);
+          productPid.setTarget(fToC(global.configProxy[condenser].targetTemp));
+          productPid.reset();
       }
       else {  // Dephleg
-        dephlegPid = new liquidPID(tempParms);
-      }
+        dephlegPid.setTarget(fToC(global.configProxy[condenser].targetTemp));
+        dephlegPid.reset();
+    }
+
     },    
 
     initAutoMode: function (condenser) {
@@ -347,7 +404,7 @@ var sensorController = (function () {
 
     // Check to see if the dephleg temp sensor responded.  
     if (!pingMessagesIn.find(function (sensor) { return sensor === 'dephleg';})) {
-      console.log("Dephleg temp senser didn't answer.");
+      // console.log("Dephleg temp senser didn't answer.");
       valveController.sensorOnline('dephleg', false);
       mqttClient.publish(      //  Publish indicator to the master module to distriubte to UI clients.  
         'stillpi/condenser/temperature', 
@@ -367,7 +424,7 @@ var sensorController = (function () {
 
     // Check to see if the dephleg temp sensor responded.  
     if (!pingMessagesIn.find(function (sensor) { return sensor === 'dephleg';})) {
-      console.log("Product condenser temp senser didn't answer.");
+      // console.log("Product condenser temp senser didn't answer.");
       valveController.sensorOnline('product', false);
       mqttClient.publish(      //  Publish indicator to the master module to distriubte to UI clients.  
         'stillpi/condenser/temperature', 
