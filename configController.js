@@ -1,6 +1,6 @@
 
 var jsonfile = require('jsonfile');
-const configFilename = "/home/pi/condensorController/configuration/config.json";
+const configFilename = "/home/pi/condenserController/configuration/config.json";
 
 // START CONFIGURATION CONTROLLER
     /*
